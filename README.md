@@ -1,7 +1,11 @@
-Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+
+Copier
+
+let
+    Source = Excel.Workbook(File.Contents("C:\Users\moham\OneDrive\Desktop\Export msproject.xlsx"), null, true),
+    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
     PromotedHeaders = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true]),
 
-    // Transformer uniquement les colonnes qui existent
     ColonnesPresentes = Table.ColumnNames(PromotedHeaders),
     TransformSafe = List.Select(
         {
@@ -15,30 +19,27 @@ Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
         each List.Contains(ColonnesPresentes, _{0})
     ),
     ChangedType = Table.TransformColumnTypes(PromotedHeaders, TransformSafe),
+    TempTable = ChangedType,
 
-    // Supprimer colonnes structurées (Table, List, Record)
     ColonnesSimples = List.Select(
-        Table.ColumnNames(ChangedType),
+        Table.ColumnNames(TempTable),
         (col) =>
-            let valeur = try Table.Column(ChangedType, col){0} otherwise null
+            let valeur = try Table.Column(TempTable, col){0} otherwise null
             in not (Value.Is(valeur, type table) or Value.Is(valeur, type list) or Value.Is(valeur, type record))
     ),
-    RemoveStructured = Table.SelectColumns(ChangedType, ColonnesSimples),
+    RemoveStructured = Table.SelectColumns(TempTable, ColonnesSimples),
 
-    // Retirer ligne domaine et lignes vides
     NomDomaine = RemoveStructured{0}[Nom de tache],
     SansLigneDomaine = Table.Skip(RemoveStructured, 1),
     SansLignesVides = Table.SelectRows(SansLigneDomaine, each
         [Nom de tache] <> null and Text.Trim(Text.From([Nom de tache])) <> ""
     ),
 
-    // Ajouter colonne Domaine en premier
     AddDomaine = Table.AddColumn(SansLignesVides, "Domaine", each NomDomaine),
     ReorderDomaine = Table.ReorderColumns(AddDomaine,
         {"Domaine"} & List.RemoveItems(Table.ColumnNames(AddDomaine), {"Domaine"})
     ),
 
-    // Index et Niveau
     AddIndex = Table.AddIndexColumn(ReorderDomaine, "Index", 0, 1),
     AddNiveau = Table.AddColumn(AddIndex, "Niveau", each
         let
@@ -50,14 +51,11 @@ Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
             if niveauBrut < 1 then 1 else if niveauBrut > 12 then 12 else niveauBrut
     ),
 
-    // Convertir en liste de records
     rows = Table.ToRecords(AddNiveau),
     nbRows = List.Count(rows),
 
-    // Profondeur minimale (s'adapte si projets en niveau 0, 1, 2...)
     ProfondeurMin = List.Min(List.Transform(rows, each try Record.Field(_, "Niveau") otherwise null)),
 
-    // Construire hiérarchie
     buildResult = List.Accumulate(
         {0..nbRows-1},
         [compteurs = List.Repeat({0}, 12), resultats = {}],
@@ -98,7 +96,6 @@ Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
 
     FinalTable = Table.FromRecords(buildResult[resultats]),
 
-    // Colonnes calculées pour les tâches de profondeur minimale
     AddCalculs = Table.AddColumn(FinalTable, "tmp", each
         let
             idx = [Index],
@@ -150,7 +147,6 @@ Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
 
     RemoveCols = Table.RemoveColumns(ExpandCols, {"Index", "Niveau"}),
 
-    // Nettoyer les colonnes avec "j", "j?" -> nombre
     GetNumber = (txt as any) =>
         if txt = null then null
         else
@@ -196,7 +192,6 @@ Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
         )
     ),
 
-    // Garder uniquement les lignes de profondeur minimale
     ProfondeurMinFinal = List.Min(Table.Column(RemplaceNullImpacts, "Profondeur")),
     LignesFiltrees = Table.SelectRows(RemplaceNullImpacts, each [Profondeur] = ProfondeurMinFinal)
 
