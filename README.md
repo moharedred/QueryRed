@@ -1,4 +1,4 @@
- #"Sheet1 Sheet" = #"Source"{0}[Data],
+#"Sheet1 Sheet" = #"Source"{0}[Data],
     #"Promoted Headers" = Table.PromoteHeaders(#"Sheet1 Sheet", [PromoteAllScalars=true]),
 
     #"Colonnes Presentes" = Table.ColumnNames(#"Promoted Headers"),
@@ -141,8 +141,12 @@
             niveau = [Niveau]
         in
         if niveau <> #"Profondeur Min" then
-            [Evenement_charge = null, Evenement_delai = null, Evenement_perimetre = null,
-             Impact_coût = null, Impact_planning = null]
+            [
+                Evenement_charge = null, Evenement_delai = null, Evenement_perimetre = null,
+                Impact_coût = null, Impact_planning = null,
+                Impact_coût_charge = null, Impact_coût_périmètre = null,
+                Impact_planning_délai = null, Impact_planning_périmètre = null
+            ]
         else
             let
                 nextParent = List.First(
@@ -160,22 +164,46 @@
                 nbDelai     = List.Count(List.Select(children, each GetType(_) = "délai")),
                 nbPerimetre = List.Count(List.Select(children, each IsPerimetre(_))),
 
-                impactCout = List.Sum(List.Transform(
-                    List.Select(children, each GetType(_) = "charge" or IsPerimetre(_)),
+                // Impact_coût = charge + périmetre (Travail réel)
+                impactCoutCharge = List.Sum(List.Transform(
+                    List.Select(children, each GetType(_) = "charge"),
+                    each try Record.Field(_, "Travail réel") otherwise null
+                )),
+                impactCoutPerimetre = List.Sum(List.Transform(
+                    List.Select(children, each IsPerimetre(_)),
                     each try Record.Field(_, "Travail réel") otherwise null
                 )),
 
-                impactPlanning = List.Sum(List.Transform(
+                // Impact_planning = délai + périmetre (Durée)
+                impactPlanningDelai = List.Sum(List.Transform(
                     List.Select(children, each GetType(_) = "délai"),
                     each try Record.Field(_, "Durée") otherwise null
-                ))
+                )),
+                impactPlanningPerimetre = List.Sum(List.Transform(
+                    List.Select(children, each IsPerimetre(_)),
+                    each try Record.Field(_, "Durée") otherwise null
+                )),
+
+                impactCout = (if impactCoutCharge = null then 0 else impactCoutCharge) +
+                             (if impactCoutPerimetre = null then 0 else impactCoutPerimetre),
+                impactPlanning = (if impactPlanningDelai = null then 0 else impactPlanningDelai) +
+                                 (if impactPlanningPerimetre = null then 0 else impactPlanningPerimetre)
             in
-                [Evenement_charge = nbCharge, Evenement_delai = nbDelai,
-                 Evenement_perimetre = nbPerimetre, Impact_coût = impactCout, Impact_planning = impactPlanning]
+                [
+                    Evenement_charge = nbCharge, Evenement_delai = nbDelai, Evenement_perimetre = nbPerimetre,
+                    Impact_coût = impactCout, Impact_planning = impactPlanning,
+                    Impact_coût_charge = impactCoutCharge, Impact_coût_périmètre = impactCoutPerimetre,
+                    Impact_planning_délai = impactPlanningDelai, Impact_planning_périmètre = impactPlanningPerimetre
+                ]
     ),
 
     #"Expand Cols" = Table.ExpandRecordColumn(#"Add Calculs", "tmp",
-        {"Evenement_charge", "Evenement_delai", "Evenement_perimetre", "Impact_coût", "Impact_planning"}
+        {
+            "Evenement_charge", "Evenement_delai", "Evenement_perimetre",
+            "Impact_coût", "Impact_planning",
+            "Impact_coût_charge", "Impact_coût_périmètre",
+            "Impact_planning_délai", "Impact_planning_périmètre"
+        }
     ),
 
     #"Remove Cols" = Table.RemoveColumns(#"Expand Cols", {"Index", "Niveau"}),
@@ -183,8 +211,12 @@
     #"Remplace Null Impacts" = Table.TransformColumns(#"Remove Cols",
         List.Select(
             {
-                {"Impact_coût",     each if _ = null then 0 else _, type number},
-                {"Impact_planning", each if _ = null then 0 else _, type number}
+                {"Impact_coût",              each if _ = null then 0 else _, type number},
+                {"Impact_planning",          each if _ = null then 0 else _, type number},
+                {"Impact_coût_charge",       each if _ = null then 0 else _, type number},
+                {"Impact_coût_périmètre",    each if _ = null then 0 else _, type number},
+                {"Impact_planning_délai",    each if _ = null then 0 else _, type number},
+                {"Impact_planning_périmètre",each if _ = null then 0 else _, type number}
             },
             each List.Contains(Table.ColumnNames(#"Remove Cols"), _{0})
         )
@@ -210,7 +242,11 @@
                 {"Evenement_delai",               type number},
                 {"Evenement_perimetre",           type number},
                 {"Impact_coût",                   type number},
-                {"Impact_planning",               type number}
+                {"Impact_planning",               type number},
+                {"Impact_coût_charge",            type number},
+                {"Impact_coût_périmètre",         type number},
+                {"Impact_planning_délai",         type number},
+                {"Impact_planning_périmètre",     type number}
             },
             each List.Contains(Table.ColumnNames(#"Lignes Filtrees"), _{0})
         )
