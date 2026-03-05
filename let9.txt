@@ -1,0 +1,206 @@
+let
+    Source = Excel.Workbook(File.Contents("C:\Users\moham\OneDrive\Desktop\Export msproject.xlsx"), null, true),
+    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true]),
+
+    // Transformer uniquement les colonnes qui existent
+    ColonnesPresentes = Table.ColumnNames(#"Promoted Headers"),
+    TransformSafe = List.Select(
+        {
+            {"Nom de tache", type text}, {"Durée", type text}, {"Travail réel", type text},
+            {"Type_Evènement", type text}, {"indicateur retard", type text}, {"Variation de fin", type text},
+            {"Fin", type text}, {"Fin de référence", type text}, {"Charge totale", type text},
+            {"Avancement (KPI 2.2)", type number}, {"Consommé", type text}, {"RAF", type text},
+            {"Engagé", type text}, {"Go Vs Activités DED (KPI 2.0)", Int64.Type},
+            {"Dérive budgétaire (KPI 2.4)", type text}, {"dérive / budget (KPI 2.4)", type number}
+        },
+        each List.Contains(ColonnesPresentes, _{0})
+    ),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers", TransformSafe),
+
+    // Supprimer colonnes structurées (Table, List, Record)
+    ColonnesSimples = List.Select(
+        Table.ColumnNames(#"Changed Type"),
+        (col) =>
+            let valeur = try Table.Column(#"Changed Type", col){0} otherwise null
+            in not (Value.Is(valeur, type table) or Value.Is(valeur, type list) or Value.Is(valeur, type record))
+    ),
+    RemoveStructured = Table.SelectColumns(#"Changed Type", ColonnesSimples),
+
+    // Retirer ligne domaine et lignes vides
+    NomDomaine = RemoveStructured{0}[Nom de tache],
+    SansLigneDomaine = Table.Skip(RemoveStructured, 1),
+    SansLignesVides = Table.SelectRows(SansLigneDomaine, each
+        [Nom de tache] <> null and Text.Trim(Text.From([Nom de tache])) <> ""
+    ),
+
+    // Ajouter colonne Domaine en premier
+    AddDomaine = Table.AddColumn(SansLignesVides, "Domaine", each NomDomaine),
+    ReorderDomaine = Table.ReorderColumns(AddDomaine,
+        {"Domaine"} & List.RemoveItems(Table.ColumnNames(AddDomaine), {"Domaine"})
+    ),
+
+    // Index et Niveau
+    AddIndex = Table.AddIndexColumn(ReorderDomaine, "Index", 0, 1),
+    AddNiveau = Table.AddColumn(AddIndex, "Niveau", each
+        let
+            raw = [Nom de tache],
+            nom = if raw = null then "" else if Value.Is(raw, type text) then raw else Text.From(raw),
+            espaces = Text.Length(nom) - Text.Length(Text.TrimStart(nom)),
+            niveauBrut = Number.IntegerDivide(espaces, 3) + 1
+        in
+            if niveauBrut < 1 then 1 else if niveauBrut > 12 then 12 else niveauBrut
+    ),
+
+    // Convertir en liste de records
+    rows = Table.ToRecords(AddNiveau),
+    nbRows = List.Count(rows),
+
+    // Profondeur minimale (s'adapte si projets en niveau 0, 1, 2...)
+    ProfondeurMin = List.Min(List.Transform(rows, each try Record.Field(_, "Niveau") otherwise null)),
+
+    // Construire hiérarchie
+    buildResult = List.Accumulate(
+        {0..nbRows-1},
+        [compteurs = List.Repeat({0}, 12), resultats = {}],
+        (state, i) =>
+            let
+                row = rows{i},
+                niveauRaw = try Record.Field(row, "Niveau") otherwise null,
+                niveau = if niveauRaw = null then 1
+                         else if niveauRaw < 1 then 1
+                         else if niveauRaw > 12 then 12
+                         else niveauRaw,
+
+                c = state[compteurs],
+
+                nouveauxCompteurs = List.Generate(
+                    () => [n = 0],
+                    each [n] < 12,
+                    each [n = [n] + 1],
+                    each
+                        if [n] + 1 = niveau then c{[n]} + 1
+                        else if [n] + 1 > niveau then 0
+                        else c{[n]}
+                ),
+
+                chemin = Text.Combine(
+                    List.Transform({0..niveau-1}, each Text.From(nouveauxCompteurs{_})),
+                    "."
+                ),
+
+                rowClean = Record.SelectFields(
+                    row,
+                    List.Select(Record.FieldNames(row), each _ <> "Chemin" and _ <> "Profondeur")
+                ),
+                newRow = Record.AddField(Record.AddField(rowClean, "Chemin", chemin), "Profondeur", niveau)
+            in
+                [compteurs = nouveauxCompteurs, resultats = state[resultats] & {newRow}]
+    ),
+
+    FinalTable = Table.FromRecords(buildResult[resultats]),
+
+    // Colonnes calculées pour les tâches de profondeur minimale
+    AddCalculs = Table.AddColumn(FinalTable, "tmp", each
+        let
+            idx = [Index],
+            niveau = [Niveau]
+        in
+        if niveau <> ProfondeurMin then
+            [Evenement_charge = null, Evenement_delai = null, Evenement_perimetre = null,
+             Impact_cout = null, Impact_delai = null]
+        else
+            let
+                nextParent = List.First(
+                    List.Select(rows, each _[Index] > idx and _[Niveau] = ProfondeurMin), null
+                ),
+                limitIdx = if nextParent = null then nbRows else nextParent[Index],
+                children = List.Select(rows, each _[Index] > idx and _[Index] < limitIdx),
+
+                nbCharge    = List.Count(List.Select(children, each (try _[Type_Evènement] otherwise null) = "charge")),
+                nbDelai     = List.Count(List.Select(children, each (try _[Type_Evènement] otherwise null) = "délai")),
+                nbPerimetre = List.Count(List.Select(children, each (try _[Type_Evènement] otherwise null) = "périmetre")),
+
+                ToNum = (txt as any) =>
+                    let
+                        s = if txt = null then null else try Text.Trim(Text.From(txt)) otherwise null,
+                        clean = if s = null then null else Text.Replace(Text.Replace(s, ",", "."), " ", ""),
+                        digits = if clean = null then null else Text.Select(clean, {"0".."9", "."})
+                    in
+                        if digits = null or digits = "" then null
+                        else try Number.From(digits) otherwise null,
+
+                impactCout = List.Sum(List.Transform(
+                    List.Select(children, each
+                        (try _[Type_Evènement] otherwise null) = "charge" or
+                        (try _[Type_Evènement] otherwise null) = "périmetre"
+                    ),
+                    each ToNum(try _[#"Travail réel"] otherwise null)
+                )),
+                impactDelai = List.Sum(List.Transform(
+                    List.Select(children, each (try _[Type_Evènement] otherwise null) = "délai"),
+                    each ToNum(try _[Durée] otherwise null)
+                ))
+            in
+                [Evenement_charge = nbCharge, Evenement_delai = nbDelai,
+                 Evenement_perimetre = nbPerimetre, Impact_cout = impactCout, Impact_delai = impactDelai]
+    ),
+
+    ExpandCols = Table.ExpandRecordColumn(AddCalculs, "tmp",
+        {"Evenement_charge", "Evenement_delai", "Evenement_perimetre", "Impact_cout", "Impact_delai"}
+    ),
+
+    RemoveCols = Table.RemoveColumns(ExpandCols, {"Index", "Niveau"}),
+
+    // Nettoyer les colonnes avec "j", "j?" -> nombre
+    GetNumber = (txt as any) =>
+        if txt = null then null
+        else
+            let
+                s = try Text.Trim(Text.From(txt)) otherwise null,
+                clean = if s = null then null else Text.Trim(Text.Replace(Text.Replace(s, "j?", ""), "j", "")),
+                clean2 = if clean = null then null else Text.Replace(clean, " ", "")
+            in
+                try Number.From(Text.Replace(clean2, ",", ".")) otherwise null,
+
+    NettoyerColonnes = Table.TransformColumns(RemoveCols,
+        List.Select(
+            {
+                {"Travail réel",                each GetNumber(_), type number},
+                {"Durée",                       each GetNumber(_), type number},
+                {"Charge totale",               each GetNumber(_), type number},
+                {"Consommé",                    each GetNumber(_), type number},
+                {"RAF",                         each GetNumber(_), type number},
+                {"Engagé",                      each GetNumber(_), type number},
+                {"Dérive budgétaire (KPI 2.4)", each GetNumber(_), type number}
+            },
+            each List.Contains(Table.ColumnNames(RemoveCols), _{0})
+        )
+    ),
+
+    ArrondiPourcentages = Table.TransformColumns(NettoyerColonnes,
+        List.Select(
+            {
+                {"Avancement (KPI 2.2)",        each if _ = null then null else Number.Round(_, 2), type number},
+                {"dérive / budget (KPI 2.4)",   each if _ = null then null else Number.Round(_, 2), type number}
+            },
+            each List.Contains(Table.ColumnNames(NettoyerColonnes), _{0})
+        )
+    ),
+
+    RemplaceNullImpacts = Table.TransformColumns(ArrondiPourcentages,
+        List.Select(
+            {
+                {"Impact_cout",  each if _ = null then 0 else _, type number},
+                {"Impact_delai", each if _ = null then 0 else _, type number}
+            },
+            each List.Contains(Table.ColumnNames(ArrondiPourcentages), _{0})
+        )
+    ),
+
+    // Garder uniquement les lignes de profondeur minimale pour la table finale filtrée
+    ProfondeurMinFinal = List.Min(Table.Column(RemplaceNullImpacts, "Profondeur")),
+    LignesFiltrees = Table.SelectRows(RemplaceNullImpacts, each [Profondeur] = ProfondeurMinFinal)
+
+in
+    LignesFiltrees
