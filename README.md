@@ -1,13 +1,48 @@
-#"Debug" = Table.AddColumn(#"Reorder Domaine", "test", each
+#"Sheet1 Sheet" = #"Source"{0}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(#"Sheet1 Sheet", [PromoteAllScalars=true]),
+
+    #"Colonnes Presentes" = Table.ColumnNames(#"Promoted Headers"),
+    #"Colonnes Simples" = List.Select(
+        #"Colonnes Presentes",
+        (col) =>
+            let v = try Table.Column(#"Promoted Headers", col){0} otherwise null
+            in not (Value.Is(v, type table) or Value.Is(v, type list) or Value.Is(v, type record))
+    ),
+    #"Remove Structured" = Table.SelectColumns(#"Promoted Headers", #"Colonnes Simples"),
+
+    #"Cols Presents 2" = Table.ColumnNames(#"Remove Structured"),
+    #"Transform Safe" = List.Select(
+        {
+            {"Nom de la tâche", type text}, {"Durée", type text}, {"Travail réel", type text},
+            {"Type_Evènement", type text}, {"indicateur retard", type text}, {"Variation de fin", type text},
+            {"Fin", type text}, {"Fin de référence", type text}, {"Charge totale", type text},
+            {"Avancement (KPI 2.2)", type number}, {"Consommé", type text}, {"RAF", type text},
+            {"Engagé", type text}, {"Go Vs Activités DED (KPI 2.0)", Int64.Type},
+            {"Dérive budgétaire (KPI 2.4)", type text}, {"dérive / budget (KPI 2.4)", type number}
+        },
+        each List.Contains(#"Cols Presents 2", _{0})
+    ),
+    #"Changed Type" = Table.TransformColumnTypes(#"Remove Structured", #"Transform Safe"),
+
+    #"Nom Domaine" = #"Changed Type"{0}[Nom de la tâche],
+    #"Sans Ligne Domaine" = Table.Skip(#"Changed Type", 1),
+    #"Sans Lignes Vides" = Table.SelectRows(#"Sans Ligne Domaine", each
+        [Nom de la tâche] <> null and Text.Trim(Text.From([Nom de la tâche])) <> ""
+    ),
+
+    #"Add Domaine" = Table.AddColumn(#"Sans Lignes Vides", "Domaine", each #"Nom Domaine"),
+    #"Reorder Domaine" = Table.ReorderColumns(#"Add Domaine",
+        {"Domaine"} & List.RemoveItems(Table.ColumnNames(#"Add Domaine"), {"Domaine"})
+    ),
+
+    #"Debug" = Table.AddColumn(#"Reorder Domaine", "test", each
         let
             s = Text.Trim(Text.From([Travail réel])),
             s2 = Text.Replace(s, ",", "."),
-            // Supprimer tout sauf chiffres, point et signe moins
-            digits = {"0","1","2","3","4","5","6","7","8","9"},
             chars = Text.ToList(s2),
+            digits = {"0","1","2","3","4","5","6","7","8","9"},
             startIdx = List.PositionOfAny(chars, List.Combine({digits, {"-"}})),
             charsFromStart = if startIdx = -1 then {} else List.Skip(chars, startIdx),
-            // Garder seulement jusqu au premier espace ou lettre
             endIdx = List.PositionOfAny(charsFromStart, {" ","j","J","?","h","d"}),
             numChars = if endIdx = -1 then charsFromStart else List.FirstN(charsFromStart, endIdx),
             numStr = Text.Combine(numChars)
