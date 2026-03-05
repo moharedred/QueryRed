@@ -1,4 +1,4 @@
-  #"Sheet1 Sheet" = #"Source"{0}[Data],
+ #"Sheet1 Sheet" = #"Source"{0}[Data],
     #"Promoted Headers" = Table.PromoteHeaders(#"Sheet1 Sheet", [PromoteAllScalars=true]),
 
     #"Colonnes Presentes" = Table.ColumnNames(#"Promoted Headers"),
@@ -35,18 +35,17 @@
         {"Domaine"} & List.RemoveItems(Table.ColumnNames(#"Add Domaine"), {"Domaine"})
     ),
 
-    // GetNumber avec locale "en-US" pour que le point soit reconnu comme separateur decimal
     #"GetNumber" = (txt as any) as any =>
         if txt = null then null
         else
             let
-                s = Text.Trim(Text.From(txt)),
+                s = Text.Remove(Text.Trim(Text.From(txt)), {" "}),
                 s2 = Text.Replace(s, ",", "."),
                 chars = Text.ToList(s2),
                 digits = {"0","1","2","3","4","5","6","7","8","9"},
                 startIdx = List.PositionOfAny(chars, List.Combine({digits, {"-"}})),
                 charsFromStart = if startIdx = -1 then {} else List.Skip(chars, startIdx),
-                endIdx = List.PositionOfAny(charsFromStart, {" ","j","J","?","h","d"}),
+                endIdx = List.PositionOfAny(charsFromStart, {"j","J","?","h","d"}),
                 numChars = if endIdx = -1 then charsFromStart else List.FirstN(charsFromStart, endIdx),
                 numStr = Text.Combine(numChars)
             in
