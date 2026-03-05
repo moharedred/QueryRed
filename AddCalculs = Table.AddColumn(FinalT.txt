@@ -1,0 +1,44 @@
+AddCalculs = Table.AddColumn(FinalTable, "tmp", each
+        let
+            idx = [Index],
+            niveau = [Niveau]
+        in
+        if niveau <> ProfondeurMin then
+            [Evenement_charge = null, Evenement_delai = null, Evenement_perimetre = null,
+             Impact_cout = null, Impact_delai = null]
+        else
+            let
+                nextParent = List.First(
+                    List.Select(rows, each _[Index] > idx and _[Niveau] = ProfondeurMin), null
+                ),
+                limitIdx = if nextParent = null then nbRows else nextParent[Index],
+                children = List.Select(rows, each _[Index] > idx and _[Index] < limitIdx),
+
+                nbCharge    = List.Count(List.Select(children, each (try _[Type_Evènement] otherwise null) = "charge")),
+                nbDelai     = List.Count(List.Select(children, each (try _[Type_Evènement] otherwise null) = "délai")),
+                nbPerimetre = List.Count(List.Select(children, each (try _[Type_Evènement] otherwise null) = "périmetre")),
+
+                ToNum = (txt as any) =>
+                    let
+                        s = if txt = null then null else try Text.Trim(Text.From(txt)) otherwise null,
+                        clean = if s = null then null else Text.Replace(Text.Replace(s, ",", "."), " ", ""),
+                        digits = if clean = null then null else Text.Select(clean, {"0".."9", "."})
+                    in
+                        if digits = null or digits = "" then null
+                        else try Number.From(digits) otherwise null,
+
+                impactCout = List.Sum(List.Transform(
+                    List.Select(children, each 
+                        (try _[Type_Evènement] otherwise null) = "charge" or 
+                        (try _[Type_Evènement] otherwise null) = "périmetre"
+                    ),
+                    each ToNum(try _[#"Travail réel"] otherwise null)
+                )),
+                impactDelai = List.Sum(List.Transform(
+                    List.Select(children, each (try _[Type_Evènement] otherwise null) = "délai"),
+                    each ToNum(try _[Durée] otherwise null)
+                ))
+            in
+                [Evenement_charge = nbCharge, Evenement_delai = nbDelai,
+                 Evenement_perimetre = nbPerimetre, Impact_cout = impactCout, Impact_delai = impactDelai]
+    ),
